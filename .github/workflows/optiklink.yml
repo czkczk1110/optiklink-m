@@ -28,13 +28,16 @@ jobs:
 
       - name: 安装浏览器依赖（Turnstile 需要真实 Chrome + 虚拟显示）
         run: |
-          set -euo pipefail
-          sudo apt-get update -qq >/dev/null 2>&1
-          sudo apt-get install -y -qq xvfb libglib2.0-0 libnss3 libatk1.0-0 \
-            libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libgbm1 \
-            libasound2 fonts-liberation >/dev/null 2>&1
-          python -m seleniumbase install --undetectable >/dev/null 2>&1 || \
-            python -m seleniumbase install >/dev/null 2>&1 || echo "⚠️ 浏览器安装失败，运行时可能仍会尝试下载"
+          set -uo pipefail
+          sudo apt-get update -qq
+          # 22.04 和 24.04 包名不同（24.04 加 t64 后缀），两个名字都试
+          for p in xvfb libnss3 libdrm2 libxkbcommon0 libgbm1 fonts-liberation \
+                   libglib2.0-0 libglib2.0-0t64 libatk1.0-0 libatk1.0-0t64 \
+                   libatk-bridge2.0-0 libatk-bridge2.0-0t64 libcups2 libcups2t64 \
+                   libasound2 libasound2t64; do
+            sudo apt-get install -y -qq "$p" >/dev/null 2>&1 && echo "  ✅ $p" || echo "  ⚠️ $p 跳过"
+          done
+          python -m seleniumbase install || echo "⚠️ SB 内置浏览器安装失败，运行时再试"
           python -c "import seleniumbase; print('✅ seleniumbase', seleniumbase.__version__)"
 
       - name: 下载并启动 Xray 代理
