@@ -23,7 +23,19 @@ jobs:
           python-version: "3.12"
 
       - name: 安装依赖
-        run: pip install requests cloudscraper "requests[socks]"
+        run: |
+          pip install requests cloudscraper "requests[socks]" seleniumbase pyvirtualdisplay
+
+      - name: 安装浏览器依赖（Turnstile 需要真实 Chrome + 虚拟显示）
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq >/dev/null 2>&1
+          sudo apt-get install -y -qq xvfb libglib2.0-0 libnss3 libatk1.0-0 \
+            libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libgbm1 \
+            libasound2 fonts-liberation >/dev/null 2>&1
+          python -m seleniumbase install --undetectable >/dev/null 2>&1 || \
+            python -m seleniumbase install >/dev/null 2>&1 || echo "⚠️ 浏览器安装失败，运行时可能仍会尝试下载"
+          python -c "import seleniumbase; print('✅ seleniumbase', seleniumbase.__version__)"
 
       - name: 下载并启动 Xray 代理
         env:
@@ -104,7 +116,7 @@ jobs:
           PANEL_URL:            "https://control.optiklink.net"
           SERVER_START_WAIT:    "60"
         run: |
-          python -u optiklink_login.py
+          xvfb-run -a --server-args="-screen 0 1920x1080x24" python -u optiklink_login.py
 
       - name: 自动更新 DISCORD_CLIENT_ID Secret
         if: steps.login.outputs.new_client_id != ''
