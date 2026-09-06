@@ -23,42 +23,6 @@
 | `time.txt` | 每次运行自动更新时间戳，保持仓库活跃 |
 | `.github/workflows/optiklink.yml` | GitHub Actions 工作流定义 |
 
-## 登录流程是怎么实现的
-
-OptikLink 的 `/login?code=` 现在不再直接签发会话，而是先弹一个 **Quick Verification** 页面：一道随机数学题（`<strong>7 + 8</strong>`）、一个 Cloudflare Turnstile（managed 模式，`data-action="login"`）、一个 CONTINUE 按钮。两个都过才放行。
-
-### 为什么必须开浏览器
-
-Turnstile 的令牌由 `api.js` 生成后写进隐藏域 `input[name="cf-turnstile-response"]`，OptikLink 服务端会校验这个值。三条路实测：
-
-| 方案 | 结果 |
-|---|---|
-| 纯 HTTP（`cloudscraper` / `requests`） | ❌ 服务端校验令牌，造不出来 |
-| 无头 / CDP 自动化（puppeteer + `--disable-blink-features=AutomationControlled` + 伪装 `navigator.webdriver`，等 32 秒） | ❌ 令牌始终为空，与代理 IP 无关 —— 是自动化指纹被识别 |
-| **SeleniumBase UC 模式（有头 Chrome + OS 级点击）** | ✅ 令牌正常生成，GitHub runner 上实测 9 秒出令牌 |
-
-关键在点击方式：Turnstile 要的是操作系统级鼠标事件。`sb.uc_gui_click_captcha()` 走 pyautogui 发真实鼠标点击，不是在浏览器里派发合成事件，Cloudflare 分辨不出来。
-
-### 四段式流程
-
-1. **[A] 探测 OAuth 参数**（HTTP）— 抓 `/auth` 页面里的 Discord authorize 链接，解析出 `client_id` / `redirect_uri` / `scope`。探测不到就用硬编码后备值；探测到且和 Secret 不一致时写进 `$GITHUB_OUTPUT`，让后续步骤更新 Secret。
-2. **[B] Discord 授权**（HTTP）— `POST https://discord.com/api/v10/oauth2/authorize`，`Authorization` 头带用户令牌，body 是 `{"authorize": true, "permissions": "0"}`，返回的 `location` 里带 `code=`。
-3. **[C] 浏览器过验证**（SeleniumBase UC 模式）—
-   - `uc_open_with_reconnect` 打开回调链接（页面被 Cloudflare 断开时自动重连）
-   - 正则从页面解析数学题 → `solve_math` 算答案 → 填入 `input[name="math_answer"]`
-   - `scrollIntoView` 把 Turnstile 滚到可视区 → `uc_gui_click_captcha()` 点击
-   - 轮询 `cf-turnstile-response` 的值，长度 > 50 视为令牌就绪（实测 794 字符）
-   - 点提交 → 落到真正的 Dashboard，检查最终 URL 里没有 `/error/`
-4. **[D] Dashboard + 保活**（HTTP）— 用拿到的页面 HTML 正则提取用户名 / 服务器数 / 到期日期；再用 `PANEL_API_KEY` 走 Pterodactyl API 查服务器状态，offline 就发 `start` 信号并轮询到它起来。这一段和登录完全独立，登录挂了它也不会受影响。
-
-最后 `build_report` 拼成 Markdown 推给 Telegram。
-
-### CI 上怎么跑有头浏览器
-
-GitHub 托管 runner 没有显示器，但有头 Chrome 必须要显示服务。workflow 里用 `xvfb-run -a --server-args="-screen 0 1920x1080x24"` 起一个虚拟 framebuffer，Chrome 挂上去就当自己有屏幕。
-
-代价：WebGL 走 SwiftShader 软件渲染，这是个机器人信号。目前实测依然能过，但如果哪天开始大面积失败，这是第一个要怀疑的点。
-
 ## 部署
 
 ### 1. Fork 这个仓库
