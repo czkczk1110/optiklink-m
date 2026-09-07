@@ -211,6 +211,31 @@ TURNSTILE_TOKEN_JS = (
     'var e=document.querySelector(\'input[name="cf-turnstile-response"]\');'
     'return e ? String(e.value) : "";'
 )
+MATH_VALUE_JS = (
+    'var e=document.querySelector(\'input[name="math_answer"]\');'
+    'return e ? String(e.value) : "";'
+)
+
+def set_math_answer(sb, answer):
+    """填数学答案并读回确认。
+    update_text 偶尔填不进去，表面看不出——提交后才被服务端判成 wrong_answer。
+    读回不一致就 JS 直设 value 兜底；仍不一致则抛真错误，别等到提交才知道。
+    """
+    want = str(answer)
+    sb.update_text('input[name="math_answer"]', want)
+    got = sb.execute_script(MATH_VALUE_JS)
+    if got != want:
+        js = (
+            'var e=document.querySelector(\'input[name="math_answer"]\');'
+            'e.value="' + want + '";'
+            'e.dispatchEvent(new Event("input",{bubbles:true}));'
+        )
+        sb.execute_script(js)
+        time.sleep(1)
+        got = sb.execute_script(MATH_VALUE_JS)
+    print(f"    答案填入读回: {got}")
+    if got != want:
+        raise RuntimeError(f"数学答案未填入（期望 {want}，实际 {got!r}）")
 
 def sb_proxy():
     """requests 用的 socks5h:// 换成 Chrome --proxy-server 认识的 socks5://"""
@@ -236,7 +261,9 @@ def browser_login(callback_url):
         raise RuntimeError("缺少 seleniumbase：pip install seleniumbase（并需本机装有 Chrome）")
     print(f"[C] 浏览器登录: {mask_url(callback_url)}")
 
-    kwargs = {"uc": True, "test": True, "locale": "en"}
+    # raise_test_failure=True：test 模式下 SB 默认吞掉块内异常（只打印 traceback），
+    # 真错误会被换成 "cannot unpack non-iterable NoneType object"，TG 报告全是错的。
+    kwargs = {"uc": True, "test": True, "locale": "en", "raise_test_failure": True}
     proxy = sb_proxy()
     if proxy:
         print(f"    代理: {proxy}")
@@ -258,7 +285,7 @@ def browser_login(callback_url):
             answer = solve_math(*m.groups())
             print(f"    题目 {m.group(1)} {m.group(2)} {m.group(3)} = {answer}")
 
-            sb.update_text('input[name="math_answer"]', str(answer))
+            set_math_answer(sb, answer)
             sb.execute_script("document.querySelector('.cf-turnstile').scrollIntoView({block:'center'})")
             time.sleep(1)
             sb.uc_gui_click_captcha()
@@ -272,6 +299,10 @@ def browser_login(callback_url):
             if len(token) <= 50:
                 raise RuntimeError("Turnstile 令牌未获取")
             print(f"    Turnstile 令牌长度 {len(token)}，提交中...")
+            # 错误页把「答案错」和「令牌被拒」混在同一页面，提交前再读一次答案好区分
+            before = sb.execute_script(MATH_VALUE_JS)
+            if before != str(answer):
+                print(f"    ⚠️ 提交前答案已不是 {answer}: {before!r}")
 
             sb.click('button[type="submit"]')
             time.sleep(3)
