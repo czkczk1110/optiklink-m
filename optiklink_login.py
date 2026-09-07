@@ -205,8 +205,10 @@ def discord_authorize(session, oauth_params):
 # 纯 HTTP 造不出令牌；无头浏览器也会被拦（自动化指纹，实测令牌始终为空）。
 # 必须真实有头浏览器 + OS 级鼠标点击，所以这一步用 SeleniumBase UC 模式。
 # math_answer 和 cf-turnstile-response 都正确才会放行。
-VERIFY_MATH_RE = re.compile(r'<strong[^>]*>\s*(\d+)\s*([+\-×*/÷])\s*(\d+)\s*</strong>', re.I)
-VERIFY_TEXT_RE = re.compile(r'What\s+is\s+(\d+?)\s*([+\-×*/÷])\s*(\d+)')
+# 算式是多操作数链（实测 "2 + 2 + 1"），只取前两个数会把答案算错
+VERIFY_STRONG_RE = re.compile(r'<strong[^>]*>([^<]*)</strong>', re.I)
+VERIFY_TEXT_RE = re.compile(r'What\s+is\s+([0-9+\-×*/÷\s]+?)\s*\?', re.I)
+MATH_TOKEN_RE = re.compile(r'\d+|[+\-×*/÷]')
 TURNSTILE_TOKEN_JS = (
     'var e=document.querySelector(\'input[name="cf-turnstile-response"]\');'
     'return e ? String(e.value) : "";'
@@ -253,6 +255,27 @@ def solve_math(a, op, b):
         return a // b   # 题面限制 0..100，整除即可
     raise ValueError(f"未知运算符 {op}")
 
+def read_math_question(html):
+    """取出算式原文。<strong> 整段优先，纯文本兜底。"""
+    m = VERIFY_STRONG_RE.search(html) or VERIFY_TEXT_RE.search(re.sub(r'<[^>]+>', ' ', html))
+    if not m:
+        raise RuntimeError("验证页未找到数学题")
+    return re.sub(r'\s+', ' ', m.group(1)).strip()
+
+def solve_math_expr(expr):
+    """按出现顺序左到右求值：'2 + 2 + 1' → 5。单步运算复用 solve_math。"""
+    tokens = MATH_TOKEN_RE.findall(expr)
+    if len(tokens) < 3 or not tokens[0].isdigit():
+        raise ValueError(f"算式不完整: {expr!r}")
+    acc = int(tokens[0])
+    i = 1
+    while i < len(tokens):
+        if tokens[i].isdigit() or i + 1 >= len(tokens) or not tokens[i + 1].isdigit():
+            raise ValueError(f"算式不完整: {expr!r}")
+        acc = solve_math(acc, tokens[i], int(tokens[i + 1]))
+        i += 2
+    return acc
+
 def browser_login(callback_url):
     """浏览器打开回调链接、解掉 Quick Verification，返回 (首页HTML, 最终URL)"""
     try:
@@ -278,12 +301,9 @@ def browser_login(callback_url):
                 break          # 没有验证页，登录已直接完成
             print(f"[C2] Quick Verification（第 {attempt} 次）...")
 
-            html = sb.get_page_source()
-            m = VERIFY_MATH_RE.search(html) or VERIFY_TEXT_RE.search(re.sub(r'<[^>]+>', ' ', html))
-            if not m:
-                raise RuntimeError("验证页未找到数学题")
-            answer = solve_math(*m.groups())
-            print(f"    题目 {m.group(1)} {m.group(2)} {m.group(3)} = {answer}")
+            expr = read_math_question(sb.get_page_source())
+            answer = solve_math_expr(expr)
+            print(f"    题目 {expr} = {answer}")
 
             set_math_answer(sb, answer)
             sb.execute_script("document.querySelector('.cf-turnstile').scrollIntoView({block:'center'})")
